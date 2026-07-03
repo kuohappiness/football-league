@@ -140,7 +140,7 @@ button {
 .player-status {
   grid-column: 3;
   justify-self: end;
-  width: min(320px, 29vw);
+  width: min(250px, 23vw);
   padding: 8px 10px;
   color: #edfdf2;
   font-size: clamp(11px, 1.22vw, 14px);
@@ -148,7 +148,7 @@ button {
 
 .player-row {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto 1fr;
   align-items: center;
   gap: 8px;
 }
@@ -162,20 +162,6 @@ button {
   height: 10px;
   border-radius: 50%;
   box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.18);
-}
-
-.charge-track {
-  height: 7px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.12);
-}
-
-.charge-fill {
-  width: 0%;
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, #6ee7a8, #ffd166, #ef476f);
 }
 
 .center-message {
@@ -409,7 +395,7 @@ button {
 
   .player-status {
     grid-column: 2;
-    width: min(48vw, 260px);
+    width: min(42vw, 220px);
   }
 
   .menu-grid,

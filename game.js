@@ -27,6 +27,9 @@
   const COUNTDOWN_SECONDS = 3.2;
   const PLAYER_RADIUS = 16;
   const BALL_RADIUS = 7;
+  const BALL_PLAYER_RESTITUTION = 0.78;
+  const KEEPER_BLOCK_RADIUS = 58;
+  const KEEPER_BLOCK_COOLDOWN = 0.55;
   const MAX_CHARGE_SECONDS = 1.15;
   const GAME_KEYS = new Set([
     "w", "a", "s", "d", "r", "e", "q", "f",
@@ -53,7 +56,7 @@
   const DIFFICULTIES = {
     easy: {
       label: "輕鬆",
-      speed: 0.9,
+      speed: 0.62,
       reaction: 0.55,
       shootPower: 0.72,
       tackleRange: 34,
@@ -61,7 +64,7 @@
     },
     normal: {
       label: "標準",
-      speed: 1,
+      speed: 0.72,
       reaction: 0.38,
       shootPower: 0.86,
       tackleRange: 39,
@@ -69,7 +72,7 @@
     },
     hard: {
       label: "強勁",
-      speed: 1.1,
+      speed: 0.84,
       reaction: 0.24,
       shootPower: 0.98,
       tackleRange: 43,
@@ -229,7 +232,7 @@
       </div>
       <div class="actions">
         <button class="secondary" data-action="home">返回</button>
-        <button class="primary" data-action="roles">下一步</button>
+        <button class="primary" data-action="difficulty">下一步</button>
       </div>
     `;
   }
@@ -275,7 +278,7 @@
       <p class="menu-subtitle">同隊時若兩人都選守門員，第二位會自動改控一般球員。</p>
       <div class="form-list">${rows}</div>
       <div class="actions">
-        <button class="secondary" data-action="${app.settings.mode === "solo" ? "difficulty" : "teams"}">返回</button>
+        <button class="secondary" data-action="difficulty">返回</button>
         <button class="primary" data-action="names">下一步</button>
       </div>
     `;
@@ -423,6 +426,7 @@
       controlledBy: null,
       aiActionAt: 0,
       tackleReadyAt: 0,
+      blockReadyAt: 0,
       noPickupUntil: 0
     };
   }
@@ -545,6 +549,7 @@
       player.lastDir = { x: TEAM_DEFS[player.team].attackDir, y: 0 };
       player.aiActionAt = match.now + 0.4 + Math.random() * 0.35;
       player.tackleReadyAt = match.now + 0.3;
+      player.blockReadyAt = match.now + 0.15;
       player.noPickupUntil = match.now + 0.25;
     });
 
@@ -637,12 +642,21 @@
       return;
     }
 
+    clearPlayerVelocities();
     updateHumanControllers(dt);
     updateAI(dt);
     resolvePlayerCollisions();
     updateBall(dt);
     updateHud();
     updateCenterMessage();
+  }
+
+  function clearPlayerVelocities() {
+    const match = app.match;
+    match.players.forEach((player) => {
+      player.vx = 0;
+      player.vy = 0;
+    });
   }
 
   function updateHumanControllers(dt) {
@@ -682,6 +696,10 @@
       const dir = normalize({ x: target.x - player.x, y: target.y - player.y });
       const speedFactor = difficulty.speed * (player.role === "goalkeeper" ? 0.9 : 1);
       movePlayer(player, dir, dt, speedFactor);
+
+      if (player.role === "goalkeeper") {
+        maybeGoalkeeperAutoBlock(player, difficulty);
+      }
 
       if (match.now < player.aiActionAt) {
         return;
@@ -801,6 +819,28 @@
     }
   }
 
+  function maybeGoalkeeperAutoBlock(player, difficulty) {
+    const match = app.match;
+    const ball = match.ball;
+    const carrier = getCarrier();
+    const triggerRange = KEEPER_BLOCK_RADIUS + difficulty.tackleRange * 0.18;
+
+    if (carrier && carrier.team !== player.team && distance(player, carrier) <= triggerRange) {
+      tryGoalkeeperBlock(player, true);
+      return;
+    }
+
+    if (carrier) {
+      return;
+    }
+
+    const dir = TEAM_DEFS[player.team].attackDir;
+    const movingTowardOwnGoal = dir > 0 ? ball.vx < -45 : ball.vx > 45;
+    if (distance(player, ball) <= triggerRange && (movingTowardOwnGoal || Math.hypot(ball.vx, ball.vy) > 280)) {
+      tryGoalkeeperBlock(player, true);
+    }
+  }
+
   function nearestTeamPlayer(team, point, includeHumans) {
     const match = app.match;
     let best = null;
@@ -849,8 +889,10 @@
     }
 
     player.lastDir = { x: normal.x, y: normal.y };
-    player.x += normal.x * player.speed * speedFactor * dt;
-    player.y += normal.y * player.speed * speedFactor * dt;
+    player.vx = normal.x * player.speed * speedFactor;
+    player.vy = normal.y * player.speed * speedFactor;
+    player.x += player.vx * dt;
+    player.y += player.vy * dt;
     clampPlayer(player);
   }
 
@@ -905,6 +947,8 @@
       return;
     }
 
+    const prevX = ball.x;
+    const prevY = ball.y;
     ball.x += ball.vx * dt;
     ball.y += ball.vy * dt;
     const friction = Math.pow(0.24, dt);
@@ -916,9 +960,75 @@
       ball.vy = 0;
     }
 
+    resolveBallPlayerCollisions(prevX, prevY);
     handleBallBounds();
     checkGoal();
     tryAutoPickup();
+  }
+
+  function resolveBallPlayerCollisions(prevX, prevY) {
+    const match = app.match;
+    const ball = match.ball;
+    const segmentX = ball.x - prevX;
+    const segmentY = ball.y - prevY;
+    const segmentLengthSq = segmentX * segmentX + segmentY * segmentY;
+    const minDistance = PLAYER_RADIUS + BALL_RADIUS;
+
+    match.players.forEach((player) => {
+      const t = segmentLengthSq > 0
+        ? clamp(((player.x - prevX) * segmentX + (player.y - prevY) * segmentY) / segmentLengthSq, 0, 1)
+        : 1;
+      const closestX = prevX + segmentX * t;
+      const closestY = prevY + segmentY * t;
+      let normal = normalize({ x: closestX - player.x, y: closestY - player.y });
+
+      if (normal.length === 0) {
+        normal = normalize({ x: prevX - player.x, y: prevY - player.y });
+      }
+      if (normal.length === 0) {
+        normal = normalize({ x: ball.vx || player.lastDir.x, y: ball.vy || player.lastDir.y });
+      }
+      if (normal.length === 0) {
+        normal = { x: TEAM_DEFS[player.team].attackDir, y: 0, length: 1 };
+      }
+
+      const dx = closestX - player.x;
+      const dy = closestY - player.y;
+      if (dx * dx + dy * dy > minDistance * minDistance) {
+        return;
+      }
+
+      ball.x = player.x + normal.x * (minDistance + 0.6);
+      ball.y = player.y + normal.y * (minDistance + 0.6);
+      bounceBallFromPlayer(player, normal, player.role === "goalkeeper" ? 0.86 : BALL_PLAYER_RESTITUTION, 0);
+
+      const speed = Math.hypot(ball.vx, ball.vy);
+      if (speed > 150) {
+        player.noPickupUntil = match.now + 0.22;
+      }
+      addBurst(ball.x, ball.y, player.role === "goalkeeper" ? TEAM_DEFS[player.team].glow : "#d9fff0", 5, 95);
+    });
+  }
+
+  function bounceBallFromPlayer(player, normal, restitution, minExitSpeed) {
+    const match = app.match;
+    const ball = match.ball;
+    const relVx = ball.vx - player.vx * 0.5;
+    const relVy = ball.vy - player.vy * 0.5;
+    const incoming = relVx * normal.x + relVy * normal.y;
+
+    if (incoming < 0) {
+      const reflectedX = relVx - (1 + restitution) * incoming * normal.x;
+      const reflectedY = relVy - (1 + restitution) * incoming * normal.y;
+      ball.vx = reflectedX + player.vx * 0.35;
+      ball.vy = reflectedY + player.vy * 0.35;
+    }
+
+    const speed = Math.hypot(ball.vx, ball.vy);
+    if (minExitSpeed > 0 && speed < minExitSpeed) {
+      ball.vx = normal.x * minExitSpeed + player.vx * 0.25;
+      ball.vy = normal.y * minExitSpeed + player.vy * 0.25;
+    }
   }
 
   function handleBallBounds() {
@@ -1034,16 +1144,83 @@
     player.noPickupUntil = match.now + looseTime + 0.08;
   }
 
+  function handleShootButtonDown(controller) {
+    const match = app.match;
+    const player = getPlayer(controller.playerId);
+    if (!player) {
+      return;
+    }
+
+    if (player.role === "goalkeeper") {
+      tryGoalkeeperBlock(player, false);
+      return;
+    }
+
+    startShotCharge(controller);
+  }
+
   function startShotCharge(controller) {
     const match = app.match;
     const player = getPlayer(controller.playerId);
-    if (!player || match.ball.carrierId !== player.id) {
+    if (!player || player.role === "goalkeeper" || match.ball.carrierId !== player.id) {
       return;
     }
 
     controller.charging = true;
     controller.chargeStartedAt = match.now;
     controller.charge = 0;
+  }
+
+  function tryGoalkeeperBlock(player, fromAI) {
+    const match = app.match;
+    if (!player || player.role !== "goalkeeper" || match.now < player.blockReadyAt) {
+      return false;
+    }
+
+    player.blockReadyAt = match.now + (fromAI ? KEEPER_BLOCK_COOLDOWN * 1.15 : KEEPER_BLOCK_COOLDOWN);
+    const ball = match.ball;
+    const carrier = getCarrier();
+    let didBlock = false;
+
+    if (carrier && carrier.id !== player.id && carrier.team !== player.team && distance(player, carrier) <= KEEPER_BLOCK_RADIUS) {
+      let normal = normalize({ x: carrier.x - player.x, y: carrier.y - player.y });
+      if (normal.length === 0) {
+        normal = normalize(player.lastDir);
+      }
+      if (normal.length === 0) {
+        normal = { x: TEAM_DEFS[player.team].attackDir, y: 0, length: 1 };
+      }
+
+      const exitSpeed = 280 + Math.hypot(carrier.vx, carrier.vy) * 0.42 + Math.hypot(player.vx, player.vy) * 0.35;
+      ball.carrierId = null;
+      ball.x = player.x + normal.x * (PLAYER_RADIUS + BALL_RADIUS + 6);
+      ball.y = player.y + normal.y * (PLAYER_RADIUS + BALL_RADIUS + 6);
+      ball.vx = normal.x * exitSpeed + player.vx * 0.25;
+      ball.vy = normal.y * exitSpeed + player.vy * 0.25;
+      ball.lastTouchTeam = player.team;
+      ball.looseUntil = match.now + 0.24;
+      carrier.noPickupUntil = match.now + 0.58;
+      didBlock = true;
+    } else if (!carrier && distance(player, ball) <= KEEPER_BLOCK_RADIUS) {
+      let normal = normalize({ x: ball.x - player.x, y: ball.y - player.y });
+      if (normal.length === 0) {
+        normal = normalize(player.lastDir);
+      }
+      if (normal.length === 0) {
+        normal = { x: TEAM_DEFS[player.team].attackDir, y: 0, length: 1 };
+      }
+
+      ball.x = player.x + normal.x * (PLAYER_RADIUS + BALL_RADIUS + 8);
+      ball.y = player.y + normal.y * (PLAYER_RADIUS + BALL_RADIUS + 8);
+      bounceBallFromPlayer(player, normal, 0.94, 260);
+      ball.lastTouchTeam = player.team;
+      ball.looseUntil = match.now + 0.22;
+      didBlock = true;
+    }
+
+    player.noPickupUntil = match.now + 0.24;
+    addBurst(player.x, player.y, didBlock ? TEAM_DEFS[player.team].glow : "rgba(245,255,250,0.86)", didBlock ? 18 : 8, didBlock ? 190 : 110);
+    return didBlock;
   }
 
   function releaseShotCharge(controller) {
@@ -1254,7 +1431,7 @@
 
     match.controllers.forEach((controller) => {
       if (key === controller.keys.shoot) {
-        startShotCharge(controller);
+        handleShootButtonDown(controller);
       }
       if (key === controller.keys.pass) {
         performPass(getPlayer(controller.playerId));
@@ -1350,15 +1527,10 @@
       const player = getPlayer(controller.playerId);
       const team = TEAM_DEFS[controller.team];
       const role = player ? ROLE_LABELS[player.role] : "";
-      const charge = Math.round(controller.charge * 100);
       return `
         <div class="player-row">
           <span class="dot" style="background:${team.color}"></span>
           <span>${escapeHtml(controller.name)} ${role}</span>
-          <span>${charge}%</span>
-          <span class="charge-track" style="grid-column: 2 / 4;">
-            <span class="charge-fill" style="width:${charge}%"></span>
-          </span>
         </div>
       `;
     }).join("");
