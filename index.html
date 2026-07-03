@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>足球大聯盟</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main id="app" aria-label="足球大聯盟">
+    <div id="stage" class="stage">
+      <canvas id="gameCanvas" width="1280" height="720" aria-label="足球比賽畫面"></canvas>
+
+      <section id="hud" class="hud hidden" aria-label="比賽資訊">
+        <div class="scoreboard">
+          <span id="teamAName">赤焰隊</span>
+          <strong id="scoreText">0 : 0</strong>
+          <span id="teamBName">湛藍隊</span>
+        </div>
+        <div id="matchClock" class="clock">03:00</div>
+        <div id="playerStatus" class="player-status"></div>
+      </section>
+
+      <div id="centerMessage" class="center-message hidden"></div>
+
+      <section id="menu" class="menu">
+        <div id="menuPanel" class="menu-panel"></div>
+      </section>
+    </div>
+  </main>
+
+  <script src="game.js"></script>
+</body>
+</html>
